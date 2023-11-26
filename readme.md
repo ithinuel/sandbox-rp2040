@@ -21,3 +21,8 @@ Identify the VID, PID and Serial for each probe with `probe-rs list`
 1. Then:
     - Terminal 1: run `cargo run --release -p i2c-controller -- --probe <VID>:<PID>:<SERIAL> --log-format '{L}{s}'`
     - Terminal 2: run `cargo run --release -p i2c-peripheral -- --probe <VID>:<PID>:<SERIAL> --log-format '{L}{s}'`
+
+## Features
+
+The i2c-peripheral crate has a `slow` feature increasing the event loop's latency from 1μs to 1ms.  
+Enable with `cargo run --release -p i2c-peripheral --features slow -- --probe <VID>:<PID>:<SERIAL> --log-format '{L}{s}'`

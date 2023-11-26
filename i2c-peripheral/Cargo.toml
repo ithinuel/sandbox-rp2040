@@ -15,3 +15,5 @@ panic-probe = { workspace = true }
 
 rp-pico = { workspace = true }
 
+[features]
+slow = []
