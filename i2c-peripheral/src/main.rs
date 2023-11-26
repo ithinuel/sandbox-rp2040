@@ -1,9 +1,20 @@
+//! I2C Peripheral example
+//!
+//! This example implements a simple i2c-event handler.
+//! It prints on its rtt trace buffer (via defmt).
+//!
+//! - On read request it sends back as many `Hey` sequences as necessary.
+//! - On write requests it prints the received bytes.
+//!
+//! Note: The peripheral cannot `NAK` read requests so it has to send bytes as long as the
+//! controller requests for more. Whether it repeats the data or sends a predefined pattern is
+//! application defined.
 #![no_std]
 #![no_main]
 
 use defmt::*;
 use defmt_rtt as _;
-use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::digital::v2::ToggleableOutputPin;
 use panic_probe as _;
 
 #[cfg(feature = "slow")]
@@ -61,6 +72,9 @@ fn main() -> ! {
     let sda_pin: Pin<_, FunctionI2C, PullNone> = pins.gpio0.reconfigure();
     let scl_pin: Pin<_, FunctionI2C, PullNone> = pins.gpio1.reconfigure();
 
+    // Create the I²C driver, using the two pre-configured pins. This will fail
+    // at compile time if the pins are in the wrong mode, or if this I²C
+    // peripheral isn't available on these pins!
     let mut i2c = bsp::hal::I2C::new_peripheral_event_iterator(
         pac.I2C0,
         sda_pin,
@@ -90,14 +104,14 @@ fn main() -> ! {
                 }
             }
             log_throttle = 0;
-            led_pin.set_high().unwrap();
+            led_pin.toggle().unwrap();
         } else {
             log_throttle += 1;
             if log_throttle == 500_000 {
                 info!("None");
                 log_throttle = 0;
             }
-            led_pin.set_low().unwrap();
+            led_pin.toggle().unwrap();
             #[cfg(not(feature = "slow"))]
             delay.delay_us(1);
             #[cfg(feature = "slow")]
@@ -105,5 +119,3 @@ fn main() -> ! {
         }
     }
 }
-
-// End of file
