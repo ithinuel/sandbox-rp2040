@@ -16,6 +16,7 @@
 //!
 #![no_std]
 #![no_main]
+#![feature(type_alias_impl_trait)]
 
 use panic_probe as _;
 
@@ -26,6 +27,7 @@ mod app {
     use embedded_hal::digital::v2::ToggleableOutputPin;
     use embedded_hal::prelude::*;
     use fugit::RateExtU32;
+    use rtic_monotonics::systick::*;
 
     use rp_pico as bsp;
 
@@ -40,6 +42,7 @@ mod app {
         sio::Sio,
         watchdog::Watchdog,
     };
+    use rtic_monotonics::systick::Systick;
 
     type SDA = Pin<Gpio0, FunctionI2C, PullNone>;
     type SCL = Pin<Gpio1, FunctionI2C, PullNone>;
@@ -49,13 +52,12 @@ mod app {
 
     #[local]
     struct Local {
-        delay: bsp::hal::Timer,
         i2c: I2C<pac::I2C0, (SDA, SCL)>,
         led: Pin<Gpio25, FunctionSioOutput, PullDown>,
     }
 
     #[init]
-    fn init(mut c: init::Context) -> (Shared, Local, init::Monotonics) {
+    fn init(mut c: init::Context) -> (Shared, Local) {
         // Soft-reset does not release the hardware spinlocks
         // Release them now to avoid a deadlock after debug or watchdog reset
         unsafe {
@@ -79,7 +81,8 @@ mod app {
         .ok()
         .unwrap();
 
-        let delay = bsp::hal::Timer::new(c.device.TIMER, &mut c.device.RESETS, &clocks);
+        let systic_mono_token = rtic_monotonics::create_systick_token!();
+        Systick::start(c.core.SYST, 125_000_000, systic_mono_token);
 
         let pins = bsp::Pins::new(
             c.device.IO_BANK0,
@@ -106,18 +109,19 @@ mod app {
             &clocks.peripheral_clock,
         );
 
-        (Shared {}, Local { delay, i2c, led }, init::Monotonics())
+        let _ = idle::spawn();
+        (Shared {}, Local { i2c, led })
     }
 
-    #[task(local = [delay, i2c, led])]
-    async fn idle(cx: idle::Context) -> ! {
+    #[task(local = [i2c, led])]
+    async fn idle(cx: idle::Context) {
         loop {
-            cx.local.delay.delay_ms(500);
+            Systick::delay(500.millis()).await;
             cx.local.led.toggle().unwrap();
             let r = cx.local.i2c.write(0x43, &[1, 2, 3]);
             info!("write: r = {}", defmt::Debug2Format(&r));
 
-            cx.local.delay.delay_ms(500);
+            Systick::delay(500.millis()).await;
             cx.local.led.toggle().unwrap();
             let mut buf = [0u8; 3];
             let r = cx.local.i2c.read(0x43, &mut buf);
@@ -125,7 +129,7 @@ mod app {
                 core::str::from_utf8_unchecked(&buf)
             });
 
-            cx.local.delay.delay_ms(500);
+            Systick::delay(500.millis()).await;
             cx.local.led.toggle().unwrap();
             let mut buf = [0u8; 8];
             let r = cx.local.i2c.read(0x43, &mut buf);

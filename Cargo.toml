@@ -3,7 +3,8 @@ resolver = "2"
 members = ["i2c-controller", "i2c-peripheral"]
 
 [workspace.dependencies]
-cortex-m-rtic = "1.1.4"
+rtic = { version = "2.0.1", features = ["thumbv6-backend"] }
+rtic-monotonics = { version = "1.0.0", features = ["cortex-m-systick"] }
 embedded-hal = { version = "0.2.5", features = ["unproven"] }
 
 defmt = "0.3"

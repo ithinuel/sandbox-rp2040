@@ -11,6 +11,7 @@
 //! application defined.
 #![no_std]
 #![no_main]
+#![feature(type_alias_impl_trait)]
 
 use panic_probe as _;
 
@@ -19,13 +20,9 @@ mod app {
     use defmt::*;
     use defmt_rtt as _;
     use embedded_hal::digital::v2::ToggleableOutputPin;
+    use rtic_monotonics::systick::*;
 
     use rp_pico as bsp;
-
-    #[cfg(feature = "slow")]
-    use embedded_hal::blocking::delay::DelayMs;
-    #[cfg(not(feature = "slow"))]
-    use embedded_hal::blocking::delay::DelayUs;
 
     use bsp::hal::{
         clocks::init_clocks_and_plls,
@@ -47,13 +44,12 @@ mod app {
 
     #[local]
     struct Local {
-        delay: bsp::hal::Timer,
         i2c: I2CPeripheralEventIterator<pac::I2C0, (SDA, SCL)>,
         led: Pin<Gpio25, FunctionSioOutput, PullDown>,
     }
 
     #[init]
-    fn init(mut c: init::Context) -> (Shared, Local, init::Monotonics) {
+    fn init(mut c: init::Context) -> (Shared, Local) {
         // Soft-reset does not release the hardware spinlocks
         // Release them now to avoid a deadlock after debug or watchdog reset
         unsafe {
@@ -65,7 +61,7 @@ mod app {
 
         // External high-speed crystal on the pico board is 12Mhz
         let external_xtal_freq_hz = 12_000_000u32;
-        let clocks = init_clocks_and_plls(
+        let _clocks = init_clocks_and_plls(
             external_xtal_freq_hz,
             c.device.XOSC,
             c.device.CLOCKS,
@@ -77,7 +73,8 @@ mod app {
         .ok()
         .unwrap();
 
-        let delay = bsp::hal::Timer::new(c.device.TIMER, &mut c.device.RESETS, &clocks);
+        let systic_mono_token = rtic_monotonics::create_systick_token!();
+        Systick::start(c.core.SYST, 125_000_000, systic_mono_token);
 
         let pins = bsp::Pins::new(
             c.device.IO_BANK0,
@@ -103,11 +100,12 @@ mod app {
             0x43,
         );
 
-        (Shared {}, Local { delay, i2c, led }, init::Monotonics())
+        let _ = work::spawn();
+        (Shared {}, Local { i2c, led })
     }
 
-    #[idle(local = [delay, i2c, led])]
-    fn idle(cx: idle::Context) -> ! {
+    #[task(local = [i2c, led])]
+    async fn work(cx: work::Context) {
         let mut log_throttle = 0;
         loop {
             if let Some(evt) = cx.local.i2c.next() {
@@ -138,9 +136,9 @@ mod app {
                 }
                 cx.local.led.toggle().unwrap();
                 #[cfg(not(feature = "slow"))]
-                cx.local.delay.delay_us(1);
+                Systick::delay(1.micros()).await;
                 #[cfg(feature = "slow")]
-                cx.local.delay.delay_ms(1);
+                Systick::delay(1.millis()).await;
             }
         }
     }
