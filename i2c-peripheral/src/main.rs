@@ -12,110 +12,136 @@
 #![no_std]
 #![no_main]
 
-use defmt::*;
-use defmt_rtt as _;
-use embedded_hal::digital::v2::ToggleableOutputPin;
 use panic_probe as _;
 
-#[cfg(feature = "slow")]
-use embedded_hal::blocking::delay::DelayMs;
-#[cfg(not(feature = "slow"))]
-use embedded_hal::blocking::delay::DelayUs;
+#[rtic::app(device = rp_pico::hal::pac, peripherals = true)]
+mod app {
+    use defmt::*;
+    use defmt_rtt as _;
+    use embedded_hal::digital::v2::ToggleableOutputPin;
 
-use rp_pico as bsp;
+    use rp_pico as bsp;
 
-use bsp::{
-    entry,
-    hal::{
+    #[cfg(feature = "slow")]
+    use embedded_hal::blocking::delay::DelayMs;
+    #[cfg(not(feature = "slow"))]
+    use embedded_hal::blocking::delay::DelayUs;
+
+    use bsp::hal::{
         clocks::init_clocks_and_plls,
-        gpio::{FunctionI2C, Pin, PullNone},
-        i2c::peripheral::I2CEvent,
+        gpio::{
+            bank0::{Gpio0, Gpio1, Gpio25},
+            FunctionI2C, FunctionSioOutput, Pin, PullDown, PullNone,
+        },
+        i2c::peripheral::{I2CEvent, I2CPeripheralEventIterator},
         pac,
         sio::Sio,
         watchdog::Watchdog,
-    },
-};
+    };
 
-#[entry]
-fn main() -> ! {
-    info!("Program start");
-    let mut pac = pac::Peripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-    let sio = Sio::new(pac.SIO);
+    type SDA = Pin<Gpio0, FunctionI2C, PullNone>;
+    type SCL = Pin<Gpio1, FunctionI2C, PullNone>;
 
-    // External high-speed crystal on the pico board is 12Mhz
-    let external_xtal_freq_hz = 12_000_000u32;
-    let clocks = init_clocks_and_plls(
-        external_xtal_freq_hz,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
+    #[shared]
+    struct Shared {}
 
-    let mut delay = bsp::hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+    #[local]
+    struct Local {
+        delay: bsp::hal::Timer,
+        i2c: I2CPeripheralEventIterator<pac::I2C0, (SDA, SCL)>,
+        led: Pin<Gpio25, FunctionSioOutput, PullDown>,
+    }
 
-    let pins = bsp::Pins::new(
-        pac.IO_BANK0,
-        pac.PADS_BANK0,
-        sio.gpio_bank0,
-        &mut pac.RESETS,
-    );
+    #[init]
+    fn init(mut c: init::Context) -> (Shared, Local, init::Monotonics) {
+        // Soft-reset does not release the hardware spinlocks
+        // Release them now to avoid a deadlock after debug or watchdog reset
+        unsafe {
+            bsp::hal::sio::spinlock_reset();
+        }
 
-    let mut led_pin = pins.led.into_push_pull_output();
+        let mut watchdog = Watchdog::new(c.device.WATCHDOG);
+        let sio = Sio::new(c.device.SIO);
 
-    // Configure two pins as being I²C, not GPIO
-    let sda_pin: Pin<_, FunctionI2C, PullNone> = pins.gpio0.reconfigure();
-    let scl_pin: Pin<_, FunctionI2C, PullNone> = pins.gpio1.reconfigure();
+        // External high-speed crystal on the pico board is 12Mhz
+        let external_xtal_freq_hz = 12_000_000u32;
+        let clocks = init_clocks_and_plls(
+            external_xtal_freq_hz,
+            c.device.XOSC,
+            c.device.CLOCKS,
+            c.device.PLL_SYS,
+            c.device.PLL_USB,
+            &mut c.device.RESETS,
+            &mut watchdog,
+        )
+        .ok()
+        .unwrap();
 
-    // Create the I²C driver, using the two pre-configured pins. This will fail
-    // at compile time if the pins are in the wrong mode, or if this I²C
-    // peripheral isn't available on these pins!
-    let mut i2c = bsp::hal::I2C::new_peripheral_event_iterator(
-        pac.I2C0,
-        sda_pin,
-        scl_pin,
-        &mut pac.RESETS,
-        0x43,
-    );
+        let delay = bsp::hal::Timer::new(c.device.TIMER, &mut c.device.RESETS, &clocks);
 
-    let mut log_throttle = 0;
-    loop {
-        if let Some(evt) = i2c.next() {
-            match evt {
-                I2CEvent::Start => info!(" start"),
-                I2CEvent::Restart => info!("restart"),
-                I2CEvent::Stop => {
-                    info!("  stop");
-                    info!("------")
+        let pins = bsp::Pins::new(
+            c.device.IO_BANK0,
+            c.device.PADS_BANK0,
+            sio.gpio_bank0,
+            &mut c.device.RESETS,
+        );
+
+        let led = pins.led.into_push_pull_output();
+
+        // Configure two pins as being I²C, not GPIO
+        let sda_pin: Pin<_, FunctionI2C, PullNone> = pins.gpio0.reconfigure();
+        let scl_pin: Pin<_, FunctionI2C, PullNone> = pins.gpio1.reconfigure();
+
+        // Create the I²C driver, using the two pre-configured pins. This will fail
+        // at compile time if the pins are in the wrong mode, or if this I²C
+        // peripheral isn't available on these pins!
+        let i2c = bsp::hal::I2C::new_peripheral_event_iterator(
+            c.device.I2C0,
+            sda_pin,
+            scl_pin,
+            &mut c.device.RESETS,
+            0x43,
+        );
+
+        (Shared {}, Local { delay, i2c, led }, init::Monotonics())
+    }
+
+    #[idle(local = [delay, i2c, led])]
+    fn idle(cx: idle::Context) -> ! {
+        let mut log_throttle = 0;
+        loop {
+            if let Some(evt) = cx.local.i2c.next() {
+                match evt {
+                    I2CEvent::Start => info!(" start"),
+                    I2CEvent::Restart => info!("restart"),
+                    I2CEvent::Stop => {
+                        info!("  stop");
+                        info!("------")
+                    }
+                    I2CEvent::TransferRead => {
+                        let n = cx.local.i2c.write(b"Hey");
+                        info!("  sent: {} byte(s)", n);
+                    }
+                    I2CEvent::TransferWrite => {
+                        let mut buf = [0; 64];
+                        let n = cx.local.i2c.read(&mut buf);
+                        info!(" recvd: {}", buf[..n])
+                    }
                 }
-                I2CEvent::TransferRead => {
-                    let n = i2c.write(b"Hey");
-                    info!("  sent: {} byte(s)", n);
-                }
-                I2CEvent::TransferWrite => {
-                    let mut buf = [0; 64];
-                    let n = i2c.read(&mut buf);
-                    info!(" recvd: {}", buf[..n])
-                }
-            }
-            log_throttle = 0;
-            led_pin.toggle().unwrap();
-        } else {
-            log_throttle += 1;
-            if log_throttle == 500_000 {
-                info!("None");
                 log_throttle = 0;
+                cx.local.led.toggle().unwrap();
+            } else {
+                log_throttle += 1;
+                if log_throttle == 500_000 {
+                    info!("None");
+                    log_throttle = 0;
+                }
+                cx.local.led.toggle().unwrap();
+                #[cfg(not(feature = "slow"))]
+                cx.local.delay.delay_us(1);
+                #[cfg(feature = "slow")]
+                cx.local.delay.delay_ms(1);
             }
-            led_pin.toggle().unwrap();
-            #[cfg(not(feature = "slow"))]
-            delay.delay_us(1);
-            #[cfg(feature = "slow")]
-            delay.delay_ms(1);
         }
     }
 }
