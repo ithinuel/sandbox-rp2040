@@ -5,7 +5,6 @@ use panic_halt as _;
 use rp_pico::entry;
 use rp_pico::hal;
 use rp_pico::hal::pac;
-use rp_pico::hal::prelude::*;
 use tm1637::TM1637;
 
 #[entry]
@@ -25,6 +24,7 @@ fn main() -> ! {
     )
     .ok()
     .unwrap();
+    let mut delay = hal::timer::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
     let hal_sio = hal::Sio::new(pac.SIO);
 
@@ -34,9 +34,6 @@ fn main() -> ! {
         hal_sio.gpio_bank0,
         &mut pac.RESETS,
     );
-
-    let core = pac::CorePeripherals::take().unwrap();
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
     let mut clock_pin = pins.gpio6.into_push_pull_output();
     let mut data_pin = pins.gpio7.into_push_pull_output();
