@@ -36,7 +36,8 @@ fn main() -> ! {
     );
 
     let mut clock_pin = pins.gpio6.into_push_pull_output();
-    let mut data_pin = pins.gpio7.into_push_pull_output();
+    //let mut data_pin = pins.gpio7.into_push_pull_output();
+    let mut data_pin = hal::gpio::InOutPin::new(pins.gpio7.into_push_pull_output());
 
     let mut tm = TM1637::new(&mut clock_pin, &mut data_pin, &mut delay);
 
